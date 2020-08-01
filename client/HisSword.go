@@ -29,16 +29,15 @@ const KEYLENGTH = 32
 const BUFSIZE = 1024 * 4
 
 func (s *server) clearcontent() {
-	//close(s.content)
-	s.content = make(chan []byte, 1024)
+	for i := 0; i < len(s.content); i++ {
+		<-s.content
+	}
 	s.clientpool.Range(func(k, v interface{}) bool {
 		v.(net.Conn).Close()
 		s.clientpool.Delete(k)
-		//log.Println("清理", k)
 		return true
 	})
 }
-
 func (s *server) waitpipe() {
 	var buffer [1024]byte
 	if !s.reverse {
@@ -65,7 +64,6 @@ func (s *server) waitpipe() {
 						conn.Close()
 						continue
 					}
-					s.clearcontent()
 					s.pipe = conn
 				} else {
 					_, _ = conn.Write([]byte("Fuck!"))
@@ -95,7 +93,6 @@ func (s *server) waitpipe() {
 				continue
 			}
 			if bytes.Equal(buffer[:n], []byte(s.passwd)) {
-				s.clearcontent()
 				s.pipe = conn
 			} else {
 				_ = conn.Close()
@@ -117,6 +114,7 @@ func (s *server) closepipe() {
 		s.pipe.Close()
 		s.pipe = nil
 	}
+	s.clearcontent()
 }
 func (s *server) inContent(key string) {
 	conn, ok := s.clientpool.Load(key)

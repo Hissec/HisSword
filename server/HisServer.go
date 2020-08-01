@@ -36,12 +36,12 @@ const KEYLENGTH = 32
 const BUFSIZE = 1024 * 4
 
 func (s *server) clearcontent() {
-	//close(s.content)
-	s.content = make(chan []byte, 1024)
+	for i := 0; i < len(s.content); i++ {
+		<-s.content
+	}
 	s.clientpool.Range(func(k, v interface{}) bool {
 		v.(net.Conn).Close()
 		s.clientpool.Delete(k)
-		//log.Println("清理", k)
 		return true
 	})
 }
@@ -72,7 +72,6 @@ func (s *server) waitpipe() {
 						conn.Close()
 						continue
 					}
-					s.clearcontent()
 					s.pipe = conn
 					log.Printf("Establish pipe connect %s success\n", fmt.Sprintf("%s:%d", s.cip, s.cport))
 				} else {
@@ -106,7 +105,6 @@ func (s *server) waitpipe() {
 				continue
 			}
 			if bytes.Equal(buffer[:n], []byte(s.passwd)) {
-				s.clearcontent()
 				s.pipe = conn
 				log.Printf("Establish pipe connect %s success\n", conn.RemoteAddr())
 			} else {
@@ -141,6 +139,7 @@ func (s *server) closepipe() {
 		s.pipe.Close()
 		s.pipe = nil
 	}
+	s.clearcontent()
 }
 func (s *server) inContent(key string, tip string, tport int) {
 	conn, ok := s.clientpool.Load(key)
@@ -232,13 +231,9 @@ func (s *server) piperead() {
 		length, err := Hissec.BytesToInt(buffer[:SIZE])
 		if length > BUFSIZE || length < KEYLENGTH || err != nil {
 			log.Println("Read buffer length error.")
-			//_, _ = s.pipe.Read(buffer[:]) //清除脏数据
 			continue
 		}
 
-		//if s.pipe == nil {
-		//	continue
-		//}
 		_, err = s.pipe.Read(buffer[:length])
 		if err != nil {
 			s.closepipe()
