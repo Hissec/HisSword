@@ -2,6 +2,7 @@ package main
 
 import (
 	"Hissec"
+	"Hissec/encryptPool"
 	"bytes"
 	"crypto/aes"
 	"crypto/tls"
@@ -16,18 +17,18 @@ import (
 
 type server struct {
 	tip        string
-	tport      int
+	tPort      int
 	lip        string
-	lport      int
+	lPort      int
 	cip        string
-	cport      int
+	cPort      int
 	pipe       net.Conn
 	passwd     string
 	content    chan []byte
 	debug      bool
-	clientpool sync.Map
+	clientPool sync.Map
 	reverse    bool //管道链接方式 反向or正向
-	entype     Hissec.Aes
+	enCrypt    encryptPool.Encrypt
 	proxy      bool //服务类型，转发还是代理
 }
 
@@ -35,26 +36,26 @@ const SIZE = 4
 const KEYLENGTH = 32
 const BUFSIZE = 1024 * 4
 
-func (s *server) clearcontent() {
+func (s *server) clearContent() {
 	for i := 0; i < len(s.content); i++ {
 		<-s.content
 	}
-	s.clientpool.Range(func(k, v interface{}) bool {
+	s.clientPool.Range(func(k, v any) bool {
 		v.(net.Conn).Close()
-		s.clientpool.Delete(k)
+		s.clientPool.Delete(k)
 		return true
 	})
 }
-func (s *server) waitpipe() {
+func (s *server) waitPipe() {
 	var buffer [1024]byte
 	if s.reverse {
 		//正向
-		lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cip, s.cport))
+		lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cip, s.cPort))
 		if err != nil {
 			log.Fatalln(err.Error())
 		}
-		lis = tls.NewListener(lis, Hissec.GetTls())
-		log.Printf("Start pipe listened on %s\n", fmt.Sprintf("%s:%d", s.cip, s.cport))
+		lis = tls.NewListener(lis, Hissec.GenerateCert(3072))
+		log.Printf("Start pipe listened on %s\n", fmt.Sprintf("%s:%d", s.cip, s.cPort))
 		for {
 			conn, err := lis.Accept()
 			if err != nil {
@@ -73,11 +74,11 @@ func (s *server) waitpipe() {
 						continue
 					}
 					s.pipe = conn
-					log.Printf("Establish pipe connect %s success\n", fmt.Sprintf("%s:%d", s.cip, s.cport))
+					log.Printf("Establish pipe connect %s success\n", fmt.Sprintf("%s:%d", s.cip, s.cPort))
 				} else {
 					_, _ = conn.Write([]byte("Fuck!"))
 					conn.Close()
-					log.Printf("Establish pipe connect %s faild: password error!\n", fmt.Sprintf("%s:%d", s.cip, s.cport))
+					log.Printf("Establish pipe connect %s faild: password error!\n", fmt.Sprintf("%s:%d", s.cip, s.cPort))
 				}
 			} else {
 				log.Println("UFO Connect...")
@@ -91,9 +92,9 @@ func (s *server) waitpipe() {
 				time.Sleep(time.Second * 3)
 				continue
 			}
-			conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.cip, s.cport), Hissec.GetTls())
+			conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.cip, s.cPort), Hissec.GenerateCert(3072))
 			if err != nil {
-				log.Printf("Establish pipe connect %s Failed. waiting retry...\n", fmt.Sprintf("%s:%d", s.cip, s.cport))
+				log.Printf("Establish pipe connect %s Failed. waiting retry...\n", fmt.Sprintf("%s:%d", s.cip, s.cPort))
 				time.Sleep(time.Second * 3)
 				continue
 			}
@@ -115,43 +116,39 @@ func (s *server) waitpipe() {
 		}
 	}
 }
-func (s *server) getket() string {
+func (s *server) getKet() string {
 	key := Hissec.GetMd5Key()
 	for {
-		_, ok := s.clientpool.Load(key)
+		_, ok := s.clientPool.Load(key)
 		if !ok {
 			return key
 		}
 	}
 }
 func (s *server) closeClient(key string) {
-	conn, ok := s.clientpool.Load(key)
+	conn, ok := s.clientPool.Load(key)
 	if !ok {
 		//log.Println("Client not exist:", key)
 		return
 	}
 	conn.(net.Conn).Close()
-	s.clientpool.Delete(key)
+	s.clientPool.Delete(key)
 	log.Printf("Close Client %s Success!\n", key)
 }
-func (s *server) closepipe() {
+func (s *server) closePipe() {
 	if s.pipe != nil {
 		s.pipe.Close()
 		s.pipe = nil
 	}
-	s.clearcontent()
+	s.clearContent()
 }
 func (s *server) inContent(key string, tip string, tport int) {
-	conn, ok := s.clientpool.Load(key)
+	conn, ok := s.clientPool.Load(key)
 	if !ok {
 		log.Printf("Client %s not exist!\n", key)
 		return
 	}
-	if s.proxy {
-		s.content <- Hissec.BytesCombine([]byte(key), []byte(fmt.Sprintf("connect-start...%s:%d", tip, tport)))
-	} else {
-		s.content <- Hissec.BytesCombine([]byte(key), []byte(fmt.Sprintf("connect-start.%s:%d", s.tip, s.tport)))
-	}
+	s.content <- Hissec.BytesCombine([]byte(key), []byte(fmt.Sprintf("connect-start.%s:%d", tip, tport)))
 
 	var buffer [BUFSIZE - KEYLENGTH - aes.BlockSize]byte //AES加密最多会增加16字节
 	for {
@@ -165,11 +162,11 @@ func (s *server) inContent(key string, tip string, tport int) {
 	}
 }
 func (s *server) server() {
-	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.lip, s.lport))
+	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.lip, s.lPort))
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
-	log.Println("Start proxy server on", fmt.Sprintf("%s:%d", s.lip, s.lport))
+	log.Println("Start proxy server on", fmt.Sprintf("%s:%d", s.lip, s.lPort))
 	for {
 		conn, err := lis.Accept()
 		if err != nil {
@@ -179,18 +176,18 @@ func (s *server) server() {
 		if s.proxy {
 			host, port, proxytype := s.setTarget(conn)
 			if host != "" && port != 0 && proxytype != 0 {
-				key := fmt.Sprintf(`%s%d`, s.getket()[:KEYLENGTH-1], proxytype)
-				s.clientpool.Store(key, conn)
+				key := fmt.Sprintf(`%s%d`, s.getKet()[:KEYLENGTH-1], proxytype)
+				s.clientPool.Store(key, conn)
 				go s.inContent(key, host, port)
 			}
 			continue
 		}
-		key := s.getket()
-		s.clientpool.Store(key, conn)
-		go s.inContent(key, s.tip, s.tport)
+		key := s.getKet()
+		s.clientPool.Store(key, conn)
+		go s.inContent(key, s.tip, s.tPort)
 	}
 }
-func (s *server) pipesend() {
+func (s *server) pipeSend() {
 	for {
 		if s.pipe == nil {
 			time.Sleep(time.Second * 3)
@@ -206,14 +203,14 @@ func (s *server) pipesend() {
 			log.Printf("%s send %d:\n%s\n", content[:KEYLENGTH], len(text), text)
 		}
 
-		_, err := s.pipe.Write(Hissec.Out(s.entype.Encode(content)))
+		_, err := s.pipe.Write(Hissec.Out(s.enCrypt.Encode(content)))
 		if err != nil {
 			log.Println("Pipe error.wait...")
-			s.closepipe()
+			s.closePipe()
 		}
 	}
 }
-func (s *server) piperead() {
+func (s *server) pipeRead() {
 	var buffer [BUFSIZE]byte
 	for {
 		if s.pipe == nil {
@@ -222,7 +219,7 @@ func (s *server) piperead() {
 		}
 		n, err := s.pipe.Read(buffer[:SIZE])
 		if err != nil {
-			s.closepipe()
+			s.closePipe()
 		}
 		if n != SIZE {
 			log.Println("Client had Interrupt closed.")
@@ -236,11 +233,11 @@ func (s *server) piperead() {
 
 		_, err = s.pipe.Read(buffer[:length])
 		if err != nil {
-			s.closepipe()
+			s.closePipe()
 			continue
 		}
 
-		text, err := s.entype.Decode(buffer[:length])
+		text, err := s.enCrypt.Decode(buffer[:length])
 		if err != nil {
 			log.Println("pipe 解密失败！")
 			continue
@@ -253,7 +250,7 @@ func (s *server) piperead() {
 		if bytes.Equal(content, []byte("connect-failed.")) {
 			log.Printf("Client %s Closed.\n", key)
 			if s.proxy {
-				client, ok := s.clientpool.Load(key)
+				client, ok := s.clientPool.Load(key)
 				if ok {
 					proxytype, _ := strconv.Atoi(key[KEYLENGTH-1:])
 					_, _ = client.(net.Conn).Write(proxyResult(proxytype, false, key))
@@ -263,7 +260,7 @@ func (s *server) piperead() {
 			continue
 		}
 
-		client, ok := s.clientpool.Load(key)
+		client, ok := s.clientPool.Load(key)
 		if !ok {
 			log.Printf("Client %s head Closed.\n", key)
 		} else {
@@ -286,27 +283,36 @@ func (s *server) piperead() {
 
 func main() {
 	lip := flag.String("a", "127.0.0.1", "Remote Forward Server IP")
-	lport := flag.Int("p", 0, "Remote Forward Server Port")
+	listenPort := flag.Int("p", 1080, "Remote Forward Server Port")
 	cip := flag.String("A", "", "Remote Forward target IP")
-	cport := flag.Int("P", 0, "Remote Forward target Port")
-	reverse := flag.Bool("reverse", false, "Pipe connect for reverse.")
-	debug := flag.Bool("debug", false, "Show debug information.")
+	pipePort := flag.Int("P", 0, "Remote Forward target Port")
+	reverse := flag.Bool("R", false, "Pipe connect for reverse.")
+	debug := flag.Bool("d", false, "Show debug information.")
 	passwd := flag.String("passwd", "Hissec!", "Pipe establish password.")
 	tip := flag.String("tip", "", "Client connect target ip")
-	tport := flag.Int("tport", 0, "Client connect target port")
+	tport := flag.Int("tPort", 0, "Client connect target port")
 	proxy := flag.Bool("proxy", false, "Server type Forward(default) or Proxy")
+	enCrypt := flag.String("enCrypt", "empty", fmt.Sprintf("enCrypt type for pipe connect\n\tOnly sypport %v", encryptPool.GetEncryptList()))
 	flag.Parse()
-	if *lport == 0 || *cip == "" || *cport == 0 || (!*proxy && (*tip == "" || *tport == 0)) {
-		flag.Usage()
+	enCryptInstance, err := encryptPool.GetEncrypt(*enCrypt)
+	if err != nil {
+		fmt.Printf("enCrypt type %s is not support!!\n\tNow Only Support %v", *enCrypt, encryptPool.GetEncryptList())
 	} else {
-		if *proxy {
-			*tip = ""
-			*tport = 0
+		if *cip == "" || *pipePort == 0 || (!*proxy && (*tip == "" || *tport == 0)) {
+			flag.Usage()
+		} else {
+			if *proxy {
+				*tip = ""
+				*tport = 0
+			}
+			s := server{lip: *lip, lPort: *listenPort, cip: *cip, cPort: *pipePort,
+				reverse: *reverse, debug: *debug, content: make(chan []byte, 1024),
+				passwd: *passwd, tip: *tip, tPort: *tport, proxy: *proxy, enCrypt: enCryptInstance}
+			go s.waitPipe()
+			go s.pipeSend()
+			go s.pipeRead()
+			s.server()
 		}
-		s := server{lip: *lip, lport: *lport, cip: *cip, cport: *cport, reverse: *reverse, debug: *debug, content: make(chan []byte, 1024), passwd: *passwd, tip: *tip, tport: *tport, proxy: *proxy}
-		go s.waitpipe()
-		go s.pipesend()
-		go s.piperead()
-		s.server()
 	}
+
 }
