@@ -35,6 +35,7 @@ type server struct {
 const SIZE = 4
 const KEYLENGTH = 32
 const BUFSIZE = 1024 * 4
+const CERTLENGTH = 3072
 
 func (s *server) clearContent() {
 	for i := 0; i < len(s.content); i++ {
@@ -54,7 +55,7 @@ func (s *server) waitPipe() {
 		if err != nil {
 			log.Fatalln(err.Error())
 		}
-		lis = tls.NewListener(lis, Hissec.GenerateCert(3072))
+		lis = tls.NewListener(lis, Hissec.GenerateCert(CERTLENGTH))
 		log.Printf("Start pipe listened on %s\n", fmt.Sprintf("%s:%d", s.cip, s.cPort))
 		for {
 			conn, err := lis.Accept()
@@ -92,7 +93,7 @@ func (s *server) waitPipe() {
 				time.Sleep(time.Second * 3)
 				continue
 			}
-			conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.cip, s.cPort), Hissec.GenerateCert(3072))
+			conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.cip, s.cPort), Hissec.GenerateCert(CERTLENGTH))
 			if err != nil {
 				log.Printf("Establish pipe connect %s Failed. waiting retry...\n", fmt.Sprintf("%s:%d", s.cip, s.cPort))
 				time.Sleep(time.Second * 3)
