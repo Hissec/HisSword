@@ -3,6 +3,7 @@ package main
 import (
 	"Hissec"
 	"Hissec/encryptPool"
+	"Hissec/random"
 	"bytes"
 	"crypto/aes"
 	"crypto/tls"
@@ -30,6 +31,8 @@ type server struct {
 const SIZE = 4
 const KEYLENGTH = 32
 const BUFSIZE = 1024 * 4
+const saltLength = 8
+const certLength = 3072
 
 func (s *server) logPrint(msg string) {
 	if s.debug {
@@ -48,37 +51,27 @@ func (s *server) clearContent() {
 	})
 }
 func (s *server) waitPipe() {
-	var buffer [1024]byte
 	if !s.reverse {
 		//正向
 		lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.ip, s.port))
 		if err != nil {
 			os.Exit(-1)
 		}
-		lis = tls.NewListener(lis, Hissec.GenerateCert(3072))
+		lis = tls.NewListener(lis, Hissec.GenerateCert(certLength))
 		for {
 			conn, err := lis.Accept()
 			if err != nil {
 				continue
 			}
 			if s.pipe == nil {
-				n, err := conn.Read(buffer[:])
-				if err != nil {
-					conn.Close()
-					continue
-				}
-				if bytes.Equal(buffer[:n], []byte(s.passwd)) {
-					_, err = conn.Write(buffer[:n])
-					if err != nil {
-						conn.Close()
-						continue
-					}
+				if s.verify(conn) {
 					s.pipe = conn
 				} else {
-					_, _ = conn.Write([]byte("Fuck!"))
+					_, _ = conn.Write([]byte("Auth fail !"))
 					conn.Close()
 				}
 			} else {
+				_, _ = conn.Write([]byte("Fuck!"))
 				conn.Close()
 			}
 		}
@@ -89,19 +82,12 @@ func (s *server) waitPipe() {
 				time.Sleep(time.Second * 3)
 				continue
 			}
-			conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.ip, s.port), Hissec.GenerateCert(3072))
+			conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", s.ip, s.port), Hissec.GenerateCert(certLength))
 			if err != nil {
 				time.Sleep(time.Second * 3)
 				continue
 			}
-			_, _ = conn.Write([]byte(s.passwd))
-			n, err := conn.Read(buffer[:])
-			if err != nil {
-				_ = conn.Close()
-				time.Sleep(time.Second * 3)
-				continue
-			}
-			if bytes.Equal(buffer[:n], []byte(s.passwd)) {
+			if s.verify(conn) {
 				s.pipe = conn
 			} else {
 				_ = conn.Close()
@@ -110,6 +96,44 @@ func (s *server) waitPipe() {
 		}
 	}
 }
+
+func (s *server) verify(conn net.Conn) bool {
+	var buffer [1024]byte
+	rs := false
+	// 先写后读
+	if s.reverse {
+		saltString := random.RandString(saltLength)
+		_, _ = conn.Write(Hissec.BytesCombine([]byte(saltString), []byte(Hissec.GetVerifyCode(saltString+s.passwd))))
+		n, err := conn.Read(buffer[:])
+		if err == nil {
+			if n == saltLength+len(Hissec.GetVerifyCode("xxx")) {
+				salt := buffer[:saltLength]
+				value := buffer[saltLength:n]
+				if bytes.Equal([]byte(Hissec.GetVerifyCode(string(salt)+s.passwd)), value) {
+					rs = true
+				}
+			}
+		}
+	} else {
+		// 先读后写
+		n, err := conn.Read(buffer[:])
+		if err == nil {
+			if n == saltLength+len(Hissec.GetVerifyCode("xxx")) {
+				salt := buffer[:saltLength]
+				value := buffer[saltLength:n]
+				if bytes.Equal([]byte(Hissec.GetVerifyCode(string(Hissec.BytesCombine(salt, []byte(s.passwd))))), value) {
+					saltString := random.RandString(saltLength)
+					_, err = conn.Write(Hissec.BytesCombine([]byte(saltString), []byte(Hissec.GetVerifyCode(saltString+s.passwd))))
+					if err == nil {
+						rs = true
+					}
+				}
+			}
+		}
+	}
+	return rs
+}
+
 func (s *server) closeClient(key string) {
 	conn, ok := s.clientPool.Load(key)
 	if !ok {
@@ -212,8 +236,6 @@ func (s *server) pipeRead() {
 			if bytes.HasPrefix(content, []byte("connect-start.")) {
 				//链接目标IP:Port
 				go s.client(key, string(content[len("connect-start."):]))
-			} else {
-				s.content <- Hissec.BytesCombine([]byte(key), []byte("connect-failed."))
 			}
 			continue
 		}
@@ -236,7 +258,7 @@ func (s *server) pipeRead() {
 func main() {
 	ip := flag.String("a", "", "PIPE IP")
 	port := flag.Int("p", 0, "PIPE Port")
-	reverse := flag.Bool("reverse", false, "Pipe connect for reverse.")
+	reverse := flag.Bool("r", false, "Pipe connect for reverse.")
 	debug := flag.Bool("debug", false, "debug log.")
 	passwd := flag.String("passwd", "Hissec!", "Pipe establish password.")
 	enCrypt := flag.String("enCrypt", "empty", fmt.Sprintf("enCrypt type for pipe connect\n\tOnly sypport %v", encryptPool.GetEncryptList()))

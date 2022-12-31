@@ -1,6 +1,6 @@
 module HisSword/server
 
-go 1.15
+go 1.18
 
 replace Hissec => F:\Code\GO\src\Hissec
 
